@@ -104,7 +104,8 @@ def login_required(fn):
         userid = await authorized_userid(request)
         if userid is None:
             raise web.HTTPUnauthorized
-
+        else:
+            request.app['current_user'] = userid
         ret = await fn(*args, **kwargs)
         return ret
 
