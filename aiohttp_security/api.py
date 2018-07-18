@@ -55,6 +55,9 @@ async def authorized_userid(request):
     if identity is None:
         return None  # non-registered user has None user_id
     user_id = await autz_policy.authorized_userid(identity)
+    if user_id:
+      # cache the user id in request
+      request.app['auth_user'] = user_id
     return user_id
 
 
@@ -104,8 +107,6 @@ def login_required(fn):
         userid = await authorized_userid(request)
         if userid is None:
             raise web.HTTPUnauthorized
-        else:
-            request.app['current_user'] = userid
         ret = await fn(*args, **kwargs)
         return ret
 
