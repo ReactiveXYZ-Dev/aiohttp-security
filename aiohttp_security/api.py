@@ -1,4 +1,5 @@
 import enum
+import warnings
 from aiohttp import web
 from aiohttp_security.abc import (AbstractIdentityPolicy,
                                   AbstractAuthorizationPolicy)
@@ -18,7 +19,7 @@ async def remember(request, response, identity, **kwargs):
     """
     assert isinstance(identity, str), identity
     assert identity
-    identity_policy = request.app.get(IDENTITY_KEY)
+    identity_policy = request.config_dict.get(IDENTITY_KEY)
     if identity_policy is None:
         text = ("Security subsystem is not initialized, "
                 "call aiohttp_security.setup(...) first")
@@ -35,7 +36,7 @@ async def forget(request, response):
     Usually it clears cookie or server-side storage to forget user
     session.
     """
-    identity_policy = request.app.get(IDENTITY_KEY)
+    identity_policy = request.config_dict.get(IDENTITY_KEY)
     if identity_policy is None:
         text = ("Security subsystem is not initialized, "
                 "call aiohttp_security.setup(...) first")
@@ -47,8 +48,8 @@ async def forget(request, response):
 
 
 async def authorized_userid(request):
-    identity_policy = request.app.get(IDENTITY_KEY)
-    autz_policy = request.app.get(AUTZ_KEY)
+    identity_policy = request.config_dict.get(IDENTITY_KEY)
+    autz_policy = request.config_dict.get(AUTZ_KEY)
     if identity_policy is None or autz_policy is None:
         return None
     identity = await identity_policy.identify(request)
@@ -56,16 +57,16 @@ async def authorized_userid(request):
         return None  # non-registered user has None user_id
     user_id = await autz_policy.authorized_userid(identity)
     if user_id:
-      # cache the user id in request
-      request.app['auth_user'] = user_id
+        # cache the user id in request
+        request.app['auth_user'] = user_id
     return user_id
 
 
 async def permits(request, permission, context=None):
     assert isinstance(permission, (str, enum.Enum)), permission
     assert permission
-    identity_policy = request.app.get(IDENTITY_KEY)
-    autz_policy = request.app.get(AUTZ_KEY)
+    identity_policy = request.config_dict.get(IDENTITY_KEY)
+    autz_policy = request.config_dict.get(AUTZ_KEY)
     if identity_policy is None or autz_policy is None:
         return True
     identity = await identity_policy.identify(request)
@@ -80,13 +81,22 @@ async def is_anonymous(request):
     User is considered anonymous if there is not identity
     in request.
     """
-    identity_policy = request.app.get(IDENTITY_KEY)
+    identity_policy = request.config_dict.get(IDENTITY_KEY)
     if identity_policy is None:
         return True
     identity = await identity_policy.identify(request)
     if identity is None:
         return True
     return False
+
+
+async def check_authorized(request):
+    """Checker that raises HTTPUnauthorized for anonymous users.
+    """
+    userid = await authorized_userid(request)
+    if userid is None:
+        raise web.HTTPUnauthorized()
+    return userid
 
 
 def login_required(fn):
@@ -104,20 +114,34 @@ def login_required(fn):
                    "or `def handler(self, request)`.")
             raise RuntimeError(msg)
 
-        userid = await authorized_userid(request)
-        if userid is None:
-            raise web.HTTPUnauthorized
-        ret = await fn(*args, **kwargs)
-        return ret
+        await check_authorized(request)
+        return await fn(*args, **kwargs)
 
+    warnings.warn("login_required decorator is deprecated, "
+                  "use check_authorized instead",
+                  DeprecationWarning)
     return wrapped
+
+
+async def check_permission(request, permission, context=None):
+    """Checker that passes only to authoraised users with given permission.
+
+    If user is not authorized - raises HTTPUnauthorized,
+    if user is authorized and does not have permission -
+    raises HTTPForbidden.
+    """
+
+    await check_authorized(request)
+    allowed = await permits(request, permission, context)
+    if not allowed:
+        raise web.HTTPForbidden()
 
 
 def has_permission(
     permission,
     context=None,
 ):
-    """Decorator that restrict access only for authorized users
+    """Decorator that restricts access only for authorized users
     with correct permissions.
 
     If user is not authorized - raises HTTPUnauthorized,
@@ -134,18 +158,14 @@ def has_permission(
                        "or `def handler(self, request)`.")
                 raise RuntimeError(msg)
 
-            userid = await authorized_userid(request)
-            if userid is None:
-                raise web.HTTPUnauthorized
-
-            allowed = await permits(request, permission, context)
-            if not allowed:
-                raise web.HTTPForbidden
-            ret = await fn(*args, **kwargs)
-            return ret
+            await check_permission(request, permission, context)
+            return await fn(*args, **kwargs)
 
         return wrapped
 
+    warnings.warn("has_permission decorator is deprecated, "
+                  "use check_permission instead",
+                  DeprecationWarning)
     return wrapper
 
 
